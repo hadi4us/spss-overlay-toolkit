@@ -23,6 +23,7 @@ Project baru untuk pengolahan data/overlay file `.sav` (SPSS) dengan Python atau
 
 Panduan lengkap ada di:
 - **`INSTALL_MACOS.md`**
+- **`ONLINE_MACOS.md`** (publish online/public dari MacBook)
 
 Quick link setup cepat:
 
@@ -95,6 +96,12 @@ cd spss-overlay-toolkit
 
 Akses di browser:
 - `http://localhost:8501`
+
+### One-click launcher (MacBook)
+
+- `./scripts/macbook/start_local.command` → jalankan lokal
+- `./scripts/macbook/start_online.command` → jalankan + URL publik (Cloudflare Tunnel)
+- `./scripts/macbook/stop_local.command` → stop aplikasi lokal
 
 Aktifkan login UI (opsional tapi disarankan):
 
