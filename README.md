@@ -13,6 +13,36 @@ Project baru untuk pengolahan data/overlay file `.sav` (SPSS) dengan Python atau
 
 ## Quick Start (Python)
 
+### Opsi A — 1 perintah (disarankan)
+
+```bash
+cd /root/.openclaw/workspace/projects/spss-overlay-toolkit
+./run.sh
+```
+
+Default `run.sh`:
+- base: `data/base.sav`
+- overlay: `data/overlay.sav`
+- keys: `id`
+- how: `left`
+- method: `replace`
+- output: `out/hasil.sav`
+- report: `out/report.json`
+
+Override via ENV:
+
+```bash
+BASE_FILE=data/a.sav OVERLAY_FILE=data/b.sav KEYS=id,tanggal METHOD=coalesce ./run.sh
+```
+
+Atau tambah flag langsung:
+
+```bash
+./run.sh --include-cols alamat,no_hp --exclude-cols status --normalize-cols
+```
+
+### Opsi B — jalankan script Python langsung
+
 ```bash
 cd /root/.openclaw/workspace/projects/spss-overlay-toolkit
 python3 -m venv .venv
