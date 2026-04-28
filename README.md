@@ -13,6 +13,9 @@ Project baru untuk pengolahan data/overlay file `.sav` (SPSS) dengan Python atau
 - `run.sh` → runner 1 perintah (default)
 - `run_with_profile.sh` → runner dengan preset profile
 - `profiles/*.env` → preset variabel per tipe dataset
+- `ui/app.py` → aplikasi web (UI/UX analisis data mirip SPSS)
+- `run_ui.sh` → jalankan aplikasi UI
+- `requirements-ui.txt` → dependency UI
 
 ## Quick Start (Python)
 
@@ -61,6 +64,29 @@ python src/overlay_sav.py \
   --output out/hasil.sav \
   --report out/report.json
 ```
+
+## UI/UX Analisis Data (Mirip SPSS)
+
+Jalankan aplikasi web:
+
+```bash
+cd /root/.openclaw/workspace/projects/spss-overlay-toolkit
+./run_ui.sh
+```
+
+Akses di browser:
+- `http://localhost:8501`
+
+Menu yang tersedia di UI:
+- Dataset Manager (upload `.sav/.csv/.xlsx/.parquet`)
+- Variable View (tipe, missing, unique)
+- Descriptive Statistics
+- Frequencies
+- Crosstabs
+- Correlation Matrix + heatmap
+- Charts interaktif
+- Overlay / Merge Builder
+- Export dataset hasil analisis
 
 ## Mode Profile (Preset Cepat)
 
