@@ -1,0 +1,6 @@
+.venv/
+data/*.sav
+data/*.csv
+data/*.xlsx
+out/*
+!out/.gitkeep
