@@ -85,7 +85,8 @@ Menu yang tersedia di UI:
 - Crosstabs
 - Correlation Matrix + heatmap
 - Charts interaktif
-- Overlay / Merge Builder
+- Overlay / Merge Builder (2 file)
+- Multi Overlay Builder (2+ file, berantai)
 - Export dataset hasil analisis
 
 ## Mode Profile (Preset Cepat)

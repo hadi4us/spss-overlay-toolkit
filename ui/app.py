@@ -36,6 +36,7 @@ def ensure_state() -> None:
         "overlay_patch_df": None,
         "overlay_report": None,
         "overlay_result_df": None,
+        "overlay_multi_data": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -161,6 +162,15 @@ def _require_df() -> pd.DataFrame | None:
         st.info("Belum ada dataset aktif. Buka menu **Dataset** dulu.")
         return None
     return df
+
+
+def _common_columns(dfs: list[pd.DataFrame]) -> list[str]:
+    if not dfs:
+        return []
+    common = set(dfs[0].columns)
+    for df in dfs[1:]:
+        common &= set(df.columns)
+    return sorted(common)
 
 
 def _page_variable_view() -> None:
@@ -319,123 +329,312 @@ def _page_charts() -> None:
         st.plotly_chart(fig, use_container_width=True)
 
 
-def _page_overlay() -> None:
-    st.subheader("Overlay / Merge Builder")
-    st.caption("Mirip proses update data SPSS: base dataset + patch dataset + key")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        up_base = st.file_uploader(
-            "Upload Base",
-            type=["sav", "csv", "xlsx", "xls", "parquet"],
-            key="overlay_base_uploader",
-        )
-    with c2:
-        up_patch = st.file_uploader(
-            "Upload Overlay/Patch",
-            type=["sav", "csv", "xlsx", "xls", "parquet"],
-            key="overlay_patch_uploader",
-        )
-
-    if up_base is not None:
-        try:
-            st.session_state.overlay_base_df = _read_uploaded(up_base)
-            st.success(f"Base loaded: {up_base.name}")
-        except Exception as e:
-            st.error(f"Base error: {e}")
-
-    if up_patch is not None:
-        try:
-            st.session_state.overlay_patch_df = _read_uploaded(up_patch)
-            st.success(f"Patch loaded: {up_patch.name}")
-        except Exception as e:
-            st.error(f"Patch error: {e}")
-
-    base_df = st.session_state.overlay_base_df
-    patch_df = st.session_state.overlay_patch_df
-
-    if base_df is None or patch_df is None:
-        st.info("Upload base & overlay dulu.")
-        return
-
-    common_cols = sorted(list(set(base_df.columns).intersection(set(patch_df.columns))))
-    if not common_cols:
-        st.error("Tidak ada nama kolom yang sama antara base dan overlay.")
-        return
-
-    st.markdown("### Parameter")
-    keys = st.multiselect("Keys", options=common_cols, default=common_cols[:1])
-    how = st.selectbox("Join mode", options=["left", "inner", "right", "outer"], index=0)
-    method = st.selectbox("Overlay method", options=["coalesce", "replace", "keep_base", "keep_overlay"], index=1)
-    normalize = st.checkbox("Normalize column names (lowercase_underscore)", value=False)
-
-    overlay_non_keys = [c for c in patch_df.columns if c not in keys]
-    include_cols = st.multiselect("Include columns (overlay)", options=overlay_non_keys, default=[])
-    exclude_cols = st.multiselect("Exclude columns (overlay)", options=overlay_non_keys, default=[])
-
-    if st.button("Run Overlay", type="primary"):
-        if not keys:
-            st.error("Pilih minimal 1 key.")
-            return
-
-        bdf = base_df.copy()
-        odf = patch_df.copy()
-
-        sel_keys = list(keys)
-        sel_include = list(include_cols)
-        sel_exclude = list(exclude_cols)
-
-        if normalize:
-            bdf = normalize_columns(bdf)
-            odf = normalize_columns(odf)
-            sel_keys = parse_csv_list(",".join([k.strip().lower().replace(" ", "_") for k in sel_keys]))
-            sel_include = parse_csv_list(",".join([c.strip().lower().replace(" ", "_") for c in sel_include]))
-            sel_exclude = parse_csv_list(",".join([c.strip().lower().replace(" ", "_") for c in sel_exclude]))
-
-        try:
-            out_df, report = overlay_merge(
-                base_df=bdf,
-                overlay_df=odf,
-                keys=sel_keys,
-                how=how,
-                method=method,
-                include_cols=sel_include,
-                exclude_cols=sel_exclude,
-            )
-            st.session_state.overlay_result_df = out_df
-            st.session_state.overlay_report = report
-            st.success("Overlay selesai.")
-        except Exception as e:
-            st.error(str(e))
-            return
-
+def _render_overlay_output() -> None:
     out_df = st.session_state.overlay_result_df
     report = st.session_state.overlay_report
 
-    if out_df is not None and report is not None:
-        st.markdown("### Overlay Report")
+    if out_df is None or report is None:
+        return
+
+    st.markdown("### Overlay Report")
+    if isinstance(report, dict) and report.get("mode") == "multi":
+        summary = {k: v for k, v in report.items() if k != "steps"}
+        st.json(summary)
+
+        st.markdown("#### Detail per step")
+        for step in report.get("steps", []):
+            step_no = step.get("step", "?")
+            overlay_name = step.get("overlay_name", "(unknown)")
+            with st.expander(f"Step {step_no} • {overlay_name}"):
+                st.json(step)
+    elif isinstance(report, dict) and report.get("mode") == "single":
+        st.json(report.get("report", {}))
+    else:
         st.json(report)
 
-        st.markdown("### Hasil Preview")
-        st.dataframe(out_df.head(100), use_container_width=True)
+    st.markdown("### Hasil Preview")
+    st.dataframe(out_df.head(100), use_container_width=True)
 
-        if st.button("Jadikan hasil overlay sebagai dataset aktif"):
-            st.session_state.df = out_df
-            st.session_state.dataset_name = "overlay_result"
-            st.success("Dataset aktif diganti ke hasil overlay.")
+    if st.button("Jadikan hasil overlay sebagai dataset aktif", key="set_overlay_as_active"):
+        st.session_state.df = out_df
+        st.session_state.dataset_name = "overlay_result"
+        st.success("Dataset aktif diganti ke hasil overlay.")
 
-        st.markdown("### Download Hasil Overlay")
-        fmt = st.selectbox("Format output", options=["sav", "csv", "xlsx", "parquet"], index=0)
-        try:
-            data, mime, ext = _df_to_download(out_df, fmt)
-            st.download_button(
-                "Download",
-                data=data,
-                file_name=f"overlay_result.{ext}",
-                mime=mime,
+    st.markdown("### Download Hasil Overlay")
+    fmt = st.selectbox("Format output", options=["sav", "csv", "xlsx", "parquet"], index=0, key="overlay_output_fmt")
+    try:
+        data, mime, ext = _df_to_download(out_df, fmt)
+        st.download_button(
+            "Download",
+            data=data,
+            file_name=f"overlay_result.{ext}",
+            mime=mime,
+            key="overlay_download_btn",
+        )
+    except Exception as e:
+        st.error(str(e))
+
+
+def _page_overlay() -> None:
+    st.subheader("Overlay / Merge Builder")
+    st.caption("Support overlay 2 file atau berantai dari 2+ file (multi overlay).")
+
+    tab_two, tab_multi = st.tabs(["Overlay 2 File", "Overlay 2+ File"])
+
+    with tab_two:
+        c1, c2 = st.columns(2)
+        with c1:
+            up_base = st.file_uploader(
+                "Upload Base",
+                type=["sav", "csv", "xlsx", "xls", "parquet"],
+                key="overlay_base_uploader",
             )
-        except Exception as e:
-            st.error(str(e))
+        with c2:
+            up_patch = st.file_uploader(
+                "Upload Overlay/Patch",
+                type=["sav", "csv", "xlsx", "xls", "parquet"],
+                key="overlay_patch_uploader",
+            )
+
+        if up_base is not None:
+            try:
+                st.session_state.overlay_base_df = _read_uploaded(up_base)
+                st.success(f"Base loaded: {up_base.name}")
+            except Exception as e:
+                st.error(f"Base error: {e}")
+
+        if up_patch is not None:
+            try:
+                st.session_state.overlay_patch_df = _read_uploaded(up_patch)
+                st.success(f"Patch loaded: {up_patch.name}")
+            except Exception as e:
+                st.error(f"Patch error: {e}")
+
+        base_df = st.session_state.overlay_base_df
+        patch_df = st.session_state.overlay_patch_df
+
+        if base_df is not None and patch_df is not None:
+            common_cols = sorted(list(set(base_df.columns).intersection(set(patch_df.columns))))
+            if not common_cols:
+                st.error("Tidak ada nama kolom yang sama antara base dan overlay.")
+            else:
+                st.markdown("### Parameter")
+                keys = st.multiselect("Keys", options=common_cols, default=common_cols[:1], key="overlay2_keys")
+                how = st.selectbox("Join mode", options=["left", "inner", "right", "outer"], index=0, key="overlay2_how")
+                method = st.selectbox(
+                    "Overlay method",
+                    options=["coalesce", "replace", "keep_base", "keep_overlay"],
+                    index=1,
+                    key="overlay2_method",
+                )
+                normalize = st.checkbox("Normalize column names (lowercase_underscore)", value=False, key="overlay2_norm")
+
+                overlay_non_keys = [c for c in patch_df.columns if c not in keys]
+                include_cols = st.multiselect(
+                    "Include columns (overlay)", options=overlay_non_keys, default=[], key="overlay2_include"
+                )
+                exclude_cols = st.multiselect(
+                    "Exclude columns (overlay)", options=overlay_non_keys, default=[], key="overlay2_exclude"
+                )
+
+                if st.button("Run Overlay (2 file)", type="primary", key="run_overlay_two"):
+                    if not keys:
+                        st.error("Pilih minimal 1 key.")
+                    else:
+                        bdf = base_df.copy()
+                        odf = patch_df.copy()
+
+                        sel_keys = list(keys)
+                        sel_include = list(include_cols)
+                        sel_exclude = list(exclude_cols)
+
+                        if normalize:
+                            bdf = normalize_columns(bdf)
+                            odf = normalize_columns(odf)
+                            sel_keys = parse_csv_list(",".join([k.strip().lower().replace(" ", "_") for k in sel_keys]))
+                            sel_include = parse_csv_list(",".join([c.strip().lower().replace(" ", "_") for c in sel_include]))
+                            sel_exclude = parse_csv_list(",".join([c.strip().lower().replace(" ", "_") for c in sel_exclude]))
+
+                        try:
+                            out_df, report = overlay_merge(
+                                base_df=bdf,
+                                overlay_df=odf,
+                                keys=sel_keys,
+                                how=how,
+                                method=method,
+                                include_cols=sel_include,
+                                exclude_cols=sel_exclude,
+                            )
+                            st.session_state.overlay_result_df = out_df
+                            st.session_state.overlay_report = {
+                                "mode": "single",
+                                "report": report,
+                            }
+                            st.success("Overlay 2 file selesai.")
+                        except Exception as e:
+                            st.error(str(e))
+        else:
+            st.info("Upload base & overlay dulu.")
+
+    with tab_multi:
+        st.caption("Upload minimal 2 file, lalu tentukan base + urutan overlay berantai.")
+        uploads = st.file_uploader(
+            "Upload multiple datasets",
+            type=["sav", "csv", "xlsx", "xls", "parquet"],
+            accept_multiple_files=True,
+            key="overlay_multi_uploader",
+        )
+
+        if uploads:
+            loaded: list[dict[str, Any]] = []
+            for up in uploads:
+                try:
+                    df = _read_uploaded(up)
+                    loaded.append({"name": up.name, "df": df})
+                except Exception as e:
+                    st.error(f"Gagal baca {up.name}: {e}")
+            st.session_state.overlay_multi_data = loaded
+
+        multi_data = st.session_state.overlay_multi_data
+        if not multi_data or len(multi_data) < 2:
+            st.info("Upload minimal 2 file untuk mode multi overlay.")
+        else:
+            summary = pd.DataFrame(
+                [
+                    {
+                        "file": item["name"],
+                        "rows": len(item["df"]),
+                        "columns": len(item["df"].columns),
+                    }
+                    for item in multi_data
+                ]
+            )
+            st.dataframe(summary, use_container_width=True)
+
+            names = [x["name"] for x in multi_data]
+            base_name = st.selectbox("Pilih base file", options=names, index=0, key="overlay_multi_base")
+
+            how = st.selectbox("Join mode", options=["left", "inner", "right", "outer"], index=0, key="overlay_multi_how")
+            method = st.selectbox(
+                "Overlay method",
+                options=["coalesce", "replace", "keep_base", "keep_overlay"],
+                index=1,
+                key="overlay_multi_method",
+            )
+            normalize = st.checkbox(
+                "Normalize column names (lowercase_underscore)",
+                value=False,
+                key="overlay_multi_norm",
+            )
+
+            prepared_data: list[dict[str, Any]] = []
+            for item in multi_data:
+                df = item["df"].copy()
+                if normalize:
+                    df = normalize_columns(df)
+                prepared_data.append({"name": item["name"], "df": df})
+
+            common_cols = _common_columns([x["df"] for x in prepared_data])
+            if not common_cols:
+                st.error("Tidak ada kolom yang sama di semua file. Tidak bisa overlay multi-file.")
+            else:
+                default_keys = common_cols[:1]
+                keys = st.multiselect("Keys (harus ada di semua file)", options=common_cols, default=default_keys)
+
+                base_idx = names.index(base_name)
+                overlay_indices = [i for i in range(len(prepared_data)) if i != base_idx]
+                ordered_overlay_names = [prepared_data[i]["name"] for i in overlay_indices]
+                st.caption(f"Urutan overlay: {' -> '.join(ordered_overlay_names)}")
+
+                union_overlay_cols = sorted(
+                    {
+                        c
+                        for i in overlay_indices
+                        for c in prepared_data[i]["df"].columns
+                    }
+                )
+                include_cols = st.multiselect(
+                    "Include columns (opsional, dari semua file overlay)",
+                    options=[c for c in union_overlay_cols if c not in keys],
+                    default=[],
+                    key="overlay_multi_include",
+                )
+                exclude_cols = st.multiselect(
+                    "Exclude columns (opsional)",
+                    options=[c for c in union_overlay_cols if c not in keys],
+                    default=[],
+                    key="overlay_multi_exclude",
+                )
+
+                if st.button("Run Overlay (2+ file)", type="primary", key="run_overlay_multi"):
+                    if not keys:
+                        st.error("Pilih minimal 1 key.")
+                    else:
+                        current_df = prepared_data[base_idx]["df"].copy()
+                        steps: list[dict[str, Any]] = []
+
+                        for step_no, idx in enumerate(overlay_indices, start=1):
+                            overlay_name = prepared_data[idx]["name"]
+                            overlay_df = prepared_data[idx]["df"].copy()
+
+                            step_include = [c for c in include_cols if c in overlay_df.columns and c not in keys]
+                            step_exclude = [c for c in exclude_cols if c in overlay_df.columns and c not in keys]
+
+                            candidate_cols = (
+                                step_include
+                                if include_cols
+                                else [c for c in overlay_df.columns if c not in keys and c not in step_exclude]
+                            )
+
+                            if not candidate_cols:
+                                steps.append(
+                                    {
+                                        "step": step_no,
+                                        "overlay_name": overlay_name,
+                                        "skipped": True,
+                                        "reason": "Tidak ada kolom overlay yang valid untuk step ini.",
+                                    }
+                                )
+                                continue
+
+                            try:
+                                out_df, rep = overlay_merge(
+                                    base_df=current_df,
+                                    overlay_df=overlay_df,
+                                    keys=list(keys),
+                                    how=how,
+                                    method=method,
+                                    include_cols=step_include,
+                                    exclude_cols=step_exclude,
+                                )
+                                rep["step"] = step_no
+                                rep["overlay_name"] = overlay_name
+                                rep["skipped"] = False
+                                steps.append(rep)
+                                current_df = out_df
+                            except Exception as e:
+                                steps.append(
+                                    {
+                                        "step": step_no,
+                                        "overlay_name": overlay_name,
+                                        "skipped": True,
+                                        "reason": str(e),
+                                    }
+                                )
+
+                        st.session_state.overlay_result_df = current_df
+                        st.session_state.overlay_report = {
+                            "mode": "multi",
+                            "base_file": base_name,
+                            "input_files": names,
+                            "keys": list(keys),
+                            "how": how,
+                            "method": method,
+                            "steps": steps,
+                        }
+                        st.success("Overlay multi-file selesai.")
+
+    _render_overlay_output()
 
 
 def _page_export() -> None:
