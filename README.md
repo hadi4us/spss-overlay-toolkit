@@ -87,6 +87,7 @@ Menu yang tersedia di UI:
 - Charts interaktif
 - Overlay / Merge Builder (2 file)
 - Multi Overlay Builder (2+ file, berantai)
+- Mapping key BASE → OVERLAY (nama kolom boleh berbeda antar file)
 - Export dataset hasil analisis
 
 ## Mode Profile (Preset Cepat)
