@@ -1062,25 +1062,30 @@ def _render_overlay_output() -> None:
         st.success("Dataset aktif diganti ke hasil overlay.")
 
     st.markdown("### Download Hasil Overlay")
-    scope = st.radio(
-        "Scope download",
-        options=["Semua baris", "Hanya halaman preview saat ini"],
-        horizontal=True,
-        key="overlay_download_scope",
-    )
-    source_df = out_df if scope == "Semua baris" else preview_df
-    st.caption(f"Baris yang akan didownload: {len(source_df):,}")
+    st.info("Download utama akan selalu berisi **SEMUA BARIS** (full dataset), bukan hanya baris preview.")
 
     fmt = st.selectbox("Format output", options=["sav", "csv", "xlsx", "parquet"], index=0, key="overlay_output_fmt")
     try:
-        data, mime, ext = _df_to_download(source_df, fmt)
+        data, mime, ext = _df_to_download(out_df, fmt)
+        st.caption(f"Baris yang akan didownload (FULL): {len(out_df):,}")
         st.download_button(
-            "Download",
+            "Download FULL dataset",
             data=data,
             file_name=f"overlay_result.{ext}",
             mime=mime,
             key="overlay_download_btn",
         )
+
+        with st.expander("Opsional: download hanya halaman preview saat ini"):
+            p_data, p_mime, p_ext = _df_to_download(preview_df, fmt)
+            st.caption(f"Baris preview saat ini: {len(preview_df):,}")
+            st.download_button(
+                "Download halaman preview saja",
+                data=p_data,
+                file_name=f"overlay_result_preview_only.{p_ext}",
+                mime=p_mime,
+                key="overlay_download_preview_btn",
+            )
     except Exception as e:
         st.error(str(e))
 
@@ -1482,26 +1487,30 @@ def _page_export() -> None:
 
     preview_df = _render_paginated_table(df, state_prefix="export_preview", title="Dataset aktif untuk export")
 
-    scope = st.radio(
-        "Scope export",
-        options=["Semua baris", "Hanya halaman preview saat ini"],
-        horizontal=True,
-        key="export_scope",
-    )
-    source_df = df if scope == "Semua baris" else preview_df
-    st.caption(f"Baris yang akan diexport: {len(source_df):,}")
+    st.info("Export utama akan selalu berisi **SEMUA BARIS** (full dataset).")
 
     fmt = st.selectbox("Format", options=["sav", "csv", "xlsx", "parquet"], index=1)
     base_name = st.text_input("Nama file (tanpa ekstensi)", value="dataset_hasil_analisis")
 
     try:
-        payload, mime, ext = _df_to_download(source_df, fmt)
+        payload, mime, ext = _df_to_download(df, fmt)
+        st.caption(f"Baris yang akan diexport (FULL): {len(df):,}")
         st.download_button(
-            "Download dataset",
+            "Download FULL dataset",
             data=payload,
             file_name=f"{base_name}.{ext}",
             mime=mime,
         )
+
+        with st.expander("Opsional: export hanya halaman preview saat ini"):
+            p_payload, p_mime, p_ext = _df_to_download(preview_df, fmt)
+            st.caption(f"Baris preview saat ini: {len(preview_df):,}")
+            st.download_button(
+                "Download halaman preview saja",
+                data=p_payload,
+                file_name=f"{base_name}_preview_only.{p_ext}",
+                mime=p_mime,
+            )
     except Exception as e:
         st.error(str(e))
 
