@@ -197,6 +197,62 @@ def _variable_view(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _render_paginated_table(df: pd.DataFrame, state_prefix: str, title: str) -> pd.DataFrame:
+    if df is None or len(df) == 0:
+        st.info("Data kosong.")
+        return df
+
+    size_key = f"{state_prefix}_page_size"
+    page_key = f"{state_prefix}_page"
+
+    if size_key not in st.session_state:
+        st.session_state[size_key] = 100
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 1
+
+    page_size = st.selectbox(
+        "Rows per page",
+        options=[25, 50, 100, 200, 500, 1000],
+        index=[25, 50, 100, 200, 500, 1000].index(st.session_state[size_key])
+        if st.session_state[size_key] in [25, 50, 100, 200, 500, 1000]
+        else 2,
+        key=size_key,
+    )
+
+    total_rows = len(df)
+    total_pages = max(1, (total_rows + page_size - 1) // page_size)
+    st.session_state[page_key] = min(max(1, st.session_state[page_key]), total_pages)
+
+    c1, c2, c3, c4 = st.columns([1, 1, 2, 2])
+    with c1:
+        if st.button("⬅ Prev", key=f"{state_prefix}_prev") and st.session_state[page_key] > 1:
+            st.session_state[page_key] -= 1
+            st.rerun()
+    with c2:
+        if st.button("Next ➡", key=f"{state_prefix}_next") and st.session_state[page_key] < total_pages:
+            st.session_state[page_key] += 1
+            st.rerun()
+    with c3:
+        st.number_input(
+            "Page",
+            min_value=1,
+            max_value=total_pages,
+            step=1,
+            key=page_key,
+        )
+    with c4:
+        st.caption(f"{title}: {total_rows:,} rows • {total_pages} pages")
+
+    page = st.session_state[page_key]
+    start = (page - 1) * page_size
+    end = min(start + page_size, total_rows)
+
+    st.caption(f"Menampilkan baris {start + 1:,} - {end:,}")
+    page_df = df.iloc[start:end]
+    st.dataframe(page_df, use_container_width=True)
+    return page_df
+
+
 def _page_dataset() -> None:
     st.subheader("Dataset Manager")
     st.caption("Upload file .sav/.csv/.xlsx/.parquet untuk jadi dataset aktif.")
@@ -224,8 +280,8 @@ def _page_dataset() -> None:
         mem_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
         col3.metric("Memory", f"{mem_mb:.2f} MB")
 
-        st.markdown("**Preview (100 baris pertama)**")
-        st.dataframe(df.head(100), use_container_width=True)
+        st.markdown("**Preview Dataset (dengan pagination)**")
+        _render_paginated_table(df, state_prefix="dataset_preview", title="Dataset aktif")
 
 
 def _require_df() -> pd.DataFrame | None:
@@ -998,7 +1054,7 @@ def _render_overlay_output() -> None:
         st.json(report)
 
     st.markdown("### Hasil Preview")
-    st.dataframe(out_df.head(100), use_container_width=True)
+    preview_df = _render_paginated_table(out_df, state_prefix="overlay_preview", title="Hasil overlay")
 
     if st.button("Jadikan hasil overlay sebagai dataset aktif", key="set_overlay_as_active"):
         st.session_state.df = out_df
@@ -1006,9 +1062,18 @@ def _render_overlay_output() -> None:
         st.success("Dataset aktif diganti ke hasil overlay.")
 
     st.markdown("### Download Hasil Overlay")
+    scope = st.radio(
+        "Scope download",
+        options=["Semua baris", "Hanya halaman preview saat ini"],
+        horizontal=True,
+        key="overlay_download_scope",
+    )
+    source_df = out_df if scope == "Semua baris" else preview_df
+    st.caption(f"Baris yang akan didownload: {len(source_df):,}")
+
     fmt = st.selectbox("Format output", options=["sav", "csv", "xlsx", "parquet"], index=0, key="overlay_output_fmt")
     try:
-        data, mime, ext = _df_to_download(out_df, fmt)
+        data, mime, ext = _df_to_download(source_df, fmt)
         st.download_button(
             "Download",
             data=data,
@@ -1415,11 +1480,22 @@ def _page_export() -> None:
     if df is None:
         return
 
+    preview_df = _render_paginated_table(df, state_prefix="export_preview", title="Dataset aktif untuk export")
+
+    scope = st.radio(
+        "Scope export",
+        options=["Semua baris", "Hanya halaman preview saat ini"],
+        horizontal=True,
+        key="export_scope",
+    )
+    source_df = df if scope == "Semua baris" else preview_df
+    st.caption(f"Baris yang akan diexport: {len(source_df):,}")
+
     fmt = st.selectbox("Format", options=["sav", "csv", "xlsx", "parquet"], index=1)
     base_name = st.text_input("Nama file (tanpa ekstensi)", value="dataset_hasil_analisis")
 
     try:
-        payload, mime, ext = _df_to_download(df, fmt)
+        payload, mime, ext = _df_to_download(source_df, fmt)
         st.download_button(
             "Download dataset",
             data=payload,

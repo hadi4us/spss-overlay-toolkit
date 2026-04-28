@@ -101,7 +101,8 @@ Menu yang tersedia di UI:
 - Overlay / Merge Builder (2 file)
 - Multi Overlay Builder (2+ file, berantai)
 - Mapping key BASE → OVERLAY (nama kolom boleh berbeda antar file)
-- Export dataset hasil analisis
+- Export dataset hasil analisis (pilih semua baris / halaman preview)
+- Pagination preview (Prev/Next + nomor halaman)
 - Report Generator (download Markdown/HTML)
 
 ## Mode Profile (Preset Cepat)
