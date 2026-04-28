@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import sys
 import tempfile
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -18,14 +21,27 @@ SRC_DIR = ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from overlay_sav import normalize_columns, overlay_merge, parse_csv_list  # noqa: E402
+from overlay_sav import normalize_columns, overlay_merge  # noqa: E402
 
 try:
     import pyreadstat
 except ImportError:  # pragma: no cover
     pyreadstat = None
 
+try:
+    from scipy import stats
+except ImportError:  # pragma: no cover
+    stats = None
+
+try:
+    import statsmodels.api as sm
+    import statsmodels.formula.api as smf
+except ImportError:  # pragma: no cover
+    sm = None
+    smf = None
+
 APP_TITLE = "SPSS-Like Data Studio"
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
 
 
 def ensure_state() -> None:
@@ -37,6 +53,9 @@ def ensure_state() -> None:
         "overlay_report": None,
         "overlay_result_df": None,
         "overlay_multi_data": None,
+        "transform_logs": [],
+        "inferential_logs": [],
+        "last_quality_report": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -47,7 +66,60 @@ def _ext(name: str) -> str:
     return Path(name).suffix.lower()
 
 
+def _append_log(kind: str, title: str, payload: dict[str, Any]) -> None:
+    entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "kind": kind,
+        "title": title,
+        "payload": payload,
+    }
+    if kind == "transform":
+        st.session_state.transform_logs = [entry] + st.session_state.transform_logs[:99]
+    elif kind == "inferential":
+        st.session_state.inferential_logs = [entry] + st.session_state.inferential_logs[:99]
+
+
+def _check_upload_limit(uploaded_file) -> None:
+    size = getattr(uploaded_file, "size", None)
+    if size is None:
+        return
+    if size > MAX_UPLOAD_MB * 1024 * 1024:
+        raise RuntimeError(
+            f"Ukuran file {size / (1024 * 1024):.1f} MB melebihi batas {MAX_UPLOAD_MB} MB."
+        )
+
+
+def _auth_gate() -> bool:
+    required_user = os.getenv("UI_USERNAME")
+    required_pass = os.getenv("UI_PASSWORD")
+
+    if not required_user and not required_pass:
+        return True
+
+    if st.session_state.get("auth_ok"):
+        return True
+
+    st.warning("Aplikasi ini diproteksi login.")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Login")
+
+    if submit:
+        user_ok = True if not required_user else hmac.compare_digest(username or "", required_user)
+        pass_ok = True if not required_pass else hmac.compare_digest(password or "", required_pass)
+        if user_ok and pass_ok:
+            st.session_state.auth_ok = True
+            st.success("Login berhasil. Silakan lanjut.")
+            st.rerun()
+        else:
+            st.error("Username/password salah.")
+
+    return False
+
+
 def _read_uploaded(uploaded_file) -> pd.DataFrame:
+    _check_upload_limit(uploaded_file)
     ext = _ext(uploaded_file.name)
     if ext == ".csv":
         return pd.read_csv(uploaded_file)
@@ -329,6 +401,577 @@ def _page_charts() -> None:
         st.plotly_chart(fig, use_container_width=True)
 
 
+def _run_data_quality(df: pd.DataFrame, key_cols: list[str] | None = None) -> dict[str, Any]:
+    key_cols = key_cols or []
+    report: dict[str, Any] = {}
+
+    rows, cols = df.shape
+    report["shape"] = {"rows": int(rows), "columns": int(cols)}
+
+    missing = df.isna().sum().sort_values(ascending=False)
+    missing_df = pd.DataFrame({
+        "column": missing.index,
+        "missing_n": missing.values,
+        "missing_pct": ((missing.values / max(rows, 1)) * 100).round(3),
+    })
+    report["missing_table"] = missing_df
+
+    dtypes_df = pd.DataFrame(
+        {
+            "column": df.columns,
+            "dtype": [str(df[c].dtype) for c in df.columns],
+            "unique_n": [int(df[c].nunique(dropna=True)) for c in df.columns],
+        }
+    )
+    report["dtypes_table"] = dtypes_df
+
+    numeric_cols = list(df.select_dtypes(include="number").columns)
+    outlier_rows = []
+    for c in numeric_cols:
+        s = df[c].dropna()
+        if len(s) < 5:
+            outlier_rows.append({"column": c, "outlier_n": 0, "outlier_pct": 0.0})
+            continue
+        q1, q3 = s.quantile(0.25), s.quantile(0.75)
+        iqr = q3 - q1
+        if iqr == 0:
+            out_n = 0
+        else:
+            low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+            out_n = int(((s < low) | (s > high)).sum())
+        outlier_rows.append(
+            {
+                "column": c,
+                "outlier_n": out_n,
+                "outlier_pct": round((out_n / max(len(s), 1)) * 100, 3),
+            }
+        )
+    report["outlier_table"] = pd.DataFrame(outlier_rows)
+
+    if key_cols:
+        missing_keys = [k for k in key_cols if k not in df.columns]
+        if missing_keys:
+            report["key_check"] = {"ok": False, "error": f"Key tidak ditemukan: {missing_keys}"}
+        else:
+            dup_n = int(df.duplicated(subset=key_cols, keep=False).sum())
+            report["key_check"] = {
+                "ok": dup_n == 0,
+                "duplicate_rows": dup_n,
+                "keys": key_cols,
+            }
+    else:
+        report["key_check"] = {"ok": None, "note": "Belum pilih key."}
+
+    score = 100.0
+    max_missing = float(missing_df["missing_pct"].max()) if len(missing_df) else 0.0
+    score -= min(40.0, max_missing * 0.4)
+    dup_penalty = 0.0
+    if report["key_check"].get("duplicate_rows"):
+        dup_penalty = min(30.0, report["key_check"]["duplicate_rows"] / max(rows, 1) * 100)
+        score -= dup_penalty
+    outlier_total = int(report["outlier_table"]["outlier_n"].sum()) if len(report["outlier_table"]) else 0
+    outlier_penalty = min(20.0, (outlier_total / max(rows, 1)) * 100)
+    score -= outlier_penalty
+    score = round(max(score, 0), 2)
+
+    report["score"] = {
+        "data_quality_score": score,
+        "max_missing_pct": round(max_missing, 3),
+        "dup_penalty": round(dup_penalty, 3),
+        "outlier_penalty": round(outlier_penalty, 3),
+    }
+
+    return report
+
+
+def _page_quality() -> None:
+    st.subheader("Data Quality Center")
+    df = _require_df()
+    if df is None:
+        return
+
+    key_options = list(df.columns)
+    selected_keys = st.multiselect("Pilih key untuk cek duplicate", options=key_options, default=[])
+
+    if st.button("Run Data Quality Check", type="primary"):
+        report = _run_data_quality(df, key_cols=selected_keys)
+        st.session_state.last_quality_report = report
+
+    report = st.session_state.last_quality_report
+    if report:
+        sc = report["score"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Quality Score", f"{sc['data_quality_score']}")
+        c2.metric("Max Missing %", f"{sc['max_missing_pct']}%")
+        c3.metric("Duplicate Rows (key)", report["key_check"].get("duplicate_rows", 0))
+
+        st.markdown("### Missingness")
+        st.dataframe(report["missing_table"], use_container_width=True)
+
+        st.markdown("### Type & Cardinality")
+        st.dataframe(report["dtypes_table"], use_container_width=True)
+
+        st.markdown("### Outlier Ringkas (IQR)")
+        st.dataframe(report["outlier_table"], use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### Schema Compare (opsional)")
+    cmp_file = st.file_uploader(
+        "Upload dataset pembanding untuk cek schema mismatch",
+        type=["sav", "csv", "xlsx", "xls", "parquet"],
+        key="quality_compare_uploader",
+    )
+    if cmp_file is not None:
+        try:
+            cmp_df = _read_uploaded(cmp_file)
+            left_only = sorted(list(set(df.columns) - set(cmp_df.columns)))
+            right_only = sorted(list(set(cmp_df.columns) - set(df.columns)))
+            common = sorted(list(set(df.columns).intersection(set(cmp_df.columns))))
+            mismatch = []
+            for col in common:
+                t1 = str(df[col].dtype)
+                t2 = str(cmp_df[col].dtype)
+                if t1 != t2:
+                    mismatch.append({"column": col, "active_dtype": t1, "compare_dtype": t2})
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Columns only in active", len(left_only))
+            c2.metric("Columns only in compare", len(right_only))
+            c3.metric("Type mismatches", len(mismatch))
+
+            if left_only:
+                st.write("Only in active:", left_only)
+            if right_only:
+                st.write("Only in compare:", right_only)
+            if mismatch:
+                st.dataframe(pd.DataFrame(mismatch), use_container_width=True)
+            else:
+                st.success("Tidak ada mismatch tipe untuk kolom yang sama.")
+        except Exception as e:
+            st.error(str(e))
+
+
+def _set_active_df(df: pd.DataFrame, name: str, log_title: str, log_payload: dict[str, Any]) -> None:
+    st.session_state.df = df
+    st.session_state.dataset_name = name
+    _append_log("transform", log_title, log_payload)
+
+
+def _page_transform() -> None:
+    st.subheader("Transform & Data Prep")
+    df = _require_df()
+    if df is None:
+        return
+
+    tab_recode, tab_compute, tab_binning, tab_missing, tab_filter, tab_logs = st.tabs(
+        ["Recode", "Compute", "Binning", "Missing", "Filter", "Transform Logs"]
+    )
+
+    with tab_recode:
+        col = st.selectbox("Kolom yang direcode", options=list(df.columns), key="recode_col")
+        mode = st.radio("Mode", ["Manual mapping", "Kategori ke kategori"], horizontal=True)
+        target = st.text_input("Nama kolom output (kosongkan untuk overwrite)", value="", key="recode_target")
+
+        if mode == "Manual mapping":
+            raw_map = st.text_area(
+                "Mapping (1 baris per aturan: nilai_lama=nilai_baru)",
+                value="",
+                height=120,
+                key="recode_map",
+            )
+            if st.button("Apply Recode", key="btn_recode"):
+                mapping: dict[Any, Any] = {}
+                for line in raw_map.splitlines():
+                    if not line.strip() or "=" not in line:
+                        continue
+                    a, b = line.split("=", 1)
+                    mapping[a.strip()] = b.strip()
+                out_col = target.strip() or col
+                new_df = df.copy()
+                new_df[out_col] = new_df[col].astype(str).replace(mapping)
+                _set_active_df(
+                    new_df,
+                    f"{st.session_state.dataset_name}_recode",
+                    "Recode variable",
+                    {"column": col, "output_column": out_col, "mapping_size": len(mapping)},
+                )
+                st.success(f"Recode selesai: {col} -> {out_col}")
+        else:
+            st.info("Untuk mode kategori, gunakan format mapping yang sama (old=new).")
+
+    with tab_compute:
+        numeric_cols = list(df.select_dtypes(include="number").columns)
+        st.caption("Contoh formula: (pendapatan - biaya) / biaya")
+        formula = st.text_input("Formula (pakai nama kolom)", value="", key="compute_formula")
+        new_col = st.text_input("Nama kolom hasil", value="var_baru", key="compute_out")
+        if numeric_cols:
+            st.write("Kolom numerik tersedia:", numeric_cols)
+        if st.button("Apply Compute", key="btn_compute"):
+            if not formula.strip() or not new_col.strip():
+                st.error("Formula dan nama kolom wajib diisi.")
+            else:
+                try:
+                    new_df = df.copy()
+                    new_df[new_col.strip()] = new_df.eval(formula)
+                    _set_active_df(
+                        new_df,
+                        f"{st.session_state.dataset_name}_compute",
+                        "Compute variable",
+                        {"formula": formula, "output_column": new_col.strip()},
+                    )
+                    st.success(f"Compute selesai: {new_col}")
+                except Exception as e:
+                    st.error(f"Compute gagal: {e}")
+
+    with tab_binning:
+        num_cols = list(df.select_dtypes(include="number").columns)
+        if not num_cols:
+            st.info("Tidak ada kolom numerik untuk binning.")
+        else:
+            src = st.selectbox("Kolom numerik", options=num_cols, key="bin_col")
+            bins = st.slider("Jumlah bin", 2, 20, 5, key="bin_n")
+            out_col = st.text_input("Nama kolom bin", value=f"{src}_bin", key="bin_out")
+            if st.button("Apply Binning", key="btn_bin"):
+                try:
+                    new_df = df.copy()
+                    new_df[out_col] = pd.cut(new_df[src], bins=bins, include_lowest=True).astype(str)
+                    _set_active_df(
+                        new_df,
+                        f"{st.session_state.dataset_name}_binning",
+                        "Binning",
+                        {"column": src, "bins": bins, "output_column": out_col},
+                    )
+                    st.success(f"Binning selesai: {out_col}")
+                except Exception as e:
+                    st.error(str(e))
+
+    with tab_missing:
+        col = st.selectbox("Kolom", options=list(df.columns), key="mis_col")
+        method = st.selectbox("Metode imputasi", options=["mean", "median", "mode", "constant"], key="mis_method")
+        const_val = st.text_input("Nilai constant (jika method=constant)", value="", key="mis_const")
+        if st.button("Apply Missing Handler", key="btn_missing"):
+            new_df = df.copy()
+            try:
+                if method == "mean":
+                    fillv = new_df[col].mean()
+                elif method == "median":
+                    fillv = new_df[col].median()
+                elif method == "mode":
+                    fillv = new_df[col].mode(dropna=True)
+                    fillv = fillv.iloc[0] if len(fillv) else None
+                else:
+                    fillv = const_val
+                new_df[col] = new_df[col].fillna(fillv)
+                _set_active_df(
+                    new_df,
+                    f"{st.session_state.dataset_name}_missing",
+                    "Handle missing",
+                    {"column": col, "method": method, "fill_value": str(fillv)},
+                )
+                st.success(f"Missing handler selesai untuk {col}")
+            except Exception as e:
+                st.error(str(e))
+
+    with tab_filter:
+        st.caption("Contoh query: usia >= 18 and status == 'AKTIF'")
+        q = st.text_input("Filter query (pandas.query)", value="", key="filter_query")
+        if st.button("Apply Filter", key="btn_filter"):
+            try:
+                new_df = df.query(q).copy() if q.strip() else df.copy()
+                _set_active_df(
+                    new_df,
+                    f"{st.session_state.dataset_name}_filter",
+                    "Filter cases",
+                    {"query": q, "rows_after": int(len(new_df))},
+                )
+                st.success(f"Filter selesai. Baris sekarang: {len(new_df):,}")
+            except Exception as e:
+                st.error(str(e))
+
+    with tab_logs:
+        logs = st.session_state.transform_logs
+        if not logs:
+            st.info("Belum ada transform log.")
+        else:
+            st.dataframe(pd.DataFrame(logs), use_container_width=True)
+
+
+def _fmt_p(p: float) -> str:
+    if p < 0.0001:
+        return "< 0.0001"
+    return f"{p:.4f}"
+
+
+def _build_formula(y: str, x_cols: list[str], data: pd.DataFrame) -> str:
+    parts = []
+    for x in x_cols:
+        if str(data[x].dtype) in {"object", "category", "bool"}:
+            parts.append(f"C(Q('{x}'))")
+        else:
+            parts.append(f"Q('{x}')")
+    rhs = " + ".join(parts) if parts else "1"
+    return f"Q('{y}') ~ {rhs}"
+
+
+def _page_inferential() -> None:
+    st.subheader("Inferential Statistics")
+    df = _require_df()
+    if df is None:
+        return
+
+    if stats is None or sm is None or smf is None:
+        st.error("Paket inferensial belum terpasang. Jalankan ulang run_ui.sh untuk install scipy/statsmodels.")
+        return
+
+    t_t, t_chi, t_anova, t_lin, t_logit, t_logs = st.tabs(
+        ["T-Test", "Chi-Square", "ANOVA", "Linear Reg", "Logistic Reg", "Inferential Logs"]
+    )
+
+    with t_t:
+        num_cols = list(df.select_dtypes(include="number").columns)
+        cat_cols = list(df.columns)
+        if not num_cols:
+            st.info("Tidak ada kolom numerik untuk t-test.")
+        else:
+            y = st.selectbox("Variable numerik", options=num_cols, key="tt_y")
+            g = st.selectbox("Grouping variable", options=cat_cols, key="tt_g")
+            groups = [x for x in df[g].dropna().unique().tolist()]
+            if len(groups) < 2:
+                st.warning("Grouping variable harus punya minimal 2 kategori.")
+            else:
+                g1 = st.selectbox("Group 1", options=groups, index=0, key="tt_g1")
+                g2 = st.selectbox("Group 2", options=groups, index=1 if len(groups) > 1 else 0, key="tt_g2")
+                equal_var = st.checkbox("Assume equal variance", value=False, key="tt_eq")
+                if st.button("Run T-Test", key="btn_ttest"):
+                    s1 = df.loc[df[g] == g1, y].dropna()
+                    s2 = df.loc[df[g] == g2, y].dropna()
+                    if len(s1) < 2 or len(s2) < 2:
+                        st.error("Masing-masing group minimal 2 observasi.")
+                    else:
+                        tstat, pval = stats.ttest_ind(s1, s2, equal_var=equal_var)
+                        res = {
+                            "test": "independent_ttest",
+                            "y": y,
+                            "group_var": g,
+                            "group1": str(g1),
+                            "group2": str(g2),
+                            "n1": int(len(s1)),
+                            "n2": int(len(s2)),
+                            "mean1": float(s1.mean()),
+                            "mean2": float(s2.mean()),
+                            "t_stat": float(tstat),
+                            "p_value": float(pval),
+                            "interpretasi": "Signifikan" if pval < 0.05 else "Tidak signifikan",
+                        }
+                        st.json(res)
+                        _append_log("inferential", "T-Test", res)
+
+    with t_chi:
+        cols = list(df.columns)
+        r = st.selectbox("Row variable", options=cols, key="chi_r")
+        c = st.selectbox("Column variable", options=cols, key="chi_c")
+        if st.button("Run Chi-Square", key="btn_chi"):
+            tab = pd.crosstab(df[r], df[c], dropna=False)
+            if tab.shape[0] < 2 or tab.shape[1] < 2:
+                st.error("Crosstab harus minimal 2x2.")
+            else:
+                chi2, pval, dof, expected = stats.chi2_contingency(tab)
+                res = {
+                    "test": "chi_square",
+                    "row": r,
+                    "column": c,
+                    "chi2": float(chi2),
+                    "dof": int(dof),
+                    "p_value": float(pval),
+                    "interpretasi": "Ada asosiasi" if pval < 0.05 else "Tidak ada asosiasi signifikan",
+                }
+                st.dataframe(tab, use_container_width=True)
+                st.json(res)
+                _append_log("inferential", "Chi-Square", res)
+
+    with t_anova:
+        num_cols = list(df.select_dtypes(include="number").columns)
+        cols = list(df.columns)
+        if not num_cols:
+            st.info("Tidak ada kolom numerik untuk ANOVA.")
+        else:
+            y = st.selectbox("Dependent variable (numeric)", options=num_cols, key="anova_y")
+            x = st.selectbox("Factor", options=cols, key="anova_x")
+            if st.button("Run One-way ANOVA", key="btn_anova"):
+                d = df[[y, x]].dropna().copy()
+                if d[x].nunique() < 2:
+                    st.error("Factor harus punya minimal 2 kategori.")
+                else:
+                    model = smf.ols(f"Q('{y}') ~ C(Q('{x}'))", data=d).fit()
+                    anova_tbl = sm.stats.anova_lm(model, typ=2)
+                    pval = float(anova_tbl["PR(>F)"].iloc[0])
+                    st.dataframe(anova_tbl, use_container_width=True)
+                    res = {
+                        "test": "anova_one_way",
+                        "y": y,
+                        "x": x,
+                        "p_value": pval,
+                        "interpretasi": "Ada perbedaan mean antar grup" if pval < 0.05 else "Tidak ada perbedaan mean signifikan",
+                    }
+                    st.json(res)
+                    _append_log("inferential", "ANOVA", res)
+
+    with t_lin:
+        num_cols = list(df.select_dtypes(include="number").columns)
+        all_cols = list(df.columns)
+        if len(num_cols) < 1:
+            st.info("Tidak ada kolom numerik untuk regresi linear.")
+        else:
+            y = st.selectbox("Y (dependent numeric)", options=num_cols, key="lin_y")
+            x_cols = st.multiselect("X variables", options=[c for c in all_cols if c != y], key="lin_x")
+            if st.button("Run Linear Regression", key="btn_lin"):
+                if not x_cols:
+                    st.error("Pilih minimal 1 variabel X.")
+                else:
+                    d = df[[y] + x_cols].dropna().copy()
+                    formula = _build_formula(y, x_cols, d)
+                    model = smf.ols(formula, data=d).fit()
+                    coef = model.summary2().tables[1].reset_index().rename(columns={"index": "term"})
+                    st.dataframe(coef, use_container_width=True)
+                    res = {
+                        "test": "linear_regression",
+                        "formula": formula,
+                        "n_obs": int(model.nobs),
+                        "r_squared": float(model.rsquared),
+                        "adj_r_squared": float(model.rsquared_adj),
+                        "f_pvalue": float(model.f_pvalue),
+                        "interpretasi": "Model signifikan" if model.f_pvalue < 0.05 else "Model belum signifikan",
+                    }
+                    st.json(res)
+                    _append_log("inferential", "Linear Regression", res)
+
+    with t_logit:
+        cols = list(df.columns)
+        y = st.selectbox("Y (binary)", options=cols, key="logit_y")
+        x_cols = st.multiselect("X variables", options=[c for c in cols if c != y], key="logit_x")
+        if st.button("Run Logistic Regression", key="btn_logit"):
+            if not x_cols:
+                st.error("Pilih minimal 1 variabel X.")
+            else:
+                d = df[[y] + x_cols].dropna().copy()
+                y_unique = d[y].dropna().unique().tolist()
+                if len(y_unique) != 2:
+                    st.error("Y harus binary (2 kategori/angka).")
+                else:
+                    mapping = {y_unique[0]: 0, y_unique[1]: 1}
+                    d[y] = d[y].map(mapping)
+                    formula = _build_formula(y, x_cols, d)
+                    try:
+                        model = smf.logit(formula, data=d).fit(disp=False)
+                        coef = model.summary2().tables[1].reset_index().rename(columns={"index": "term"})
+                        st.dataframe(coef, use_container_width=True)
+                        res = {
+                            "test": "logistic_regression",
+                            "formula": formula,
+                            "n_obs": int(model.nobs),
+                            "pseudo_r2": float(getattr(model, "prsquared", np.nan)),
+                            "llr_pvalue": float(getattr(model, "llr_pvalue", np.nan)),
+                            "mapping_y": {str(k): int(v) for k, v in mapping.items()},
+                            "interpretasi": "Model signifikan" if float(getattr(model, "llr_pvalue", 1.0)) < 0.05 else "Model belum signifikan",
+                        }
+                        st.json(res)
+                        _append_log("inferential", "Logistic Regression", res)
+                    except Exception as e:
+                        st.error(f"Logistic regression gagal: {e}")
+
+    with t_logs:
+        logs = st.session_state.inferential_logs
+        if not logs:
+            st.info("Belum ada inferential log.")
+        else:
+            st.dataframe(pd.DataFrame(logs), use_container_width=True)
+
+
+def _page_report() -> None:
+    st.subheader("Report Generator")
+    df = _require_df()
+    if df is None:
+        return
+
+    include_quality = st.checkbox("Include data quality summary", value=True)
+    include_transform = st.checkbox("Include transform logs", value=True)
+    include_inferential = st.checkbox("Include inferential logs", value=True)
+
+    report_title = st.text_input("Judul report", value="Laporan Analisis Data")
+
+    if st.button("Generate Report", type="primary"):
+        quality = st.session_state.last_quality_report if include_quality else None
+        if include_quality and quality is None:
+            quality = _run_data_quality(df)
+            st.session_state.last_quality_report = quality
+
+        lines = []
+        lines.append(f"# {report_title}")
+        lines.append("")
+        lines.append(f"Waktu generate: {datetime.utcnow().isoformat()}Z")
+        lines.append("")
+        lines.append("## Ringkasan Dataset")
+        lines.append(f"- Nama dataset aktif: {st.session_state.dataset_name}")
+        lines.append(f"- Shape: {df.shape[0]} baris x {df.shape[1]} kolom")
+        lines.append("")
+
+        if quality is not None:
+            sc = quality["score"]
+            lines.append("## Data Quality")
+            lines.append(f"- Quality score: {sc['data_quality_score']}")
+            lines.append(f"- Max missing: {sc['max_missing_pct']}%")
+            lines.append(f"- Duplicate rows (key): {quality['key_check'].get('duplicate_rows', 0)}")
+            lines.append("")
+
+        if include_transform:
+            lines.append("## Transform Logs")
+            logs = st.session_state.transform_logs[:20]
+            if not logs:
+                lines.append("- Tidak ada log transform.")
+            else:
+                for i, log in enumerate(logs, start=1):
+                    lines.append(f"{i}. [{log['timestamp']}] {log['title']} :: {json.dumps(log['payload'], ensure_ascii=False)}")
+            lines.append("")
+
+        if include_inferential:
+            lines.append("## Inferential Logs")
+            ilogs = st.session_state.inferential_logs[:20]
+            if not ilogs:
+                lines.append("- Tidak ada log inferensial.")
+            else:
+                for i, log in enumerate(ilogs, start=1):
+                    payload = log.get("payload", {})
+                    pval = payload.get("p_value")
+                    ptxt = _fmt_p(float(pval)) if isinstance(pval, (int, float)) else "n/a"
+                    lines.append(f"{i}. [{log['timestamp']}] {log['title']} (p={ptxt})")
+                    lines.append(f"   - detail: {json.dumps(payload, ensure_ascii=False)}")
+            lines.append("")
+
+        md_text = "\n".join(lines)
+        html_body = (
+            "<html><head><meta charset='utf-8'><title>Report</title></head><body>"
+            + "<pre style='font-family: Arial, sans-serif; white-space: pre-wrap'>"
+            + md_text.replace("<", "&lt;").replace(">", "&gt;")
+            + "</pre></body></html>"
+        )
+
+        st.markdown("### Preview")
+        st.code(md_text, language="markdown")
+
+        st.download_button(
+            "Download Markdown",
+            data=md_text.encode("utf-8"),
+            file_name="report_analisis.md",
+            mime="text/markdown",
+        )
+        st.download_button(
+            "Download HTML",
+            data=html_body.encode("utf-8"),
+            file_name="report_analisis.html",
+            mime="text/html",
+        )
+
+
 def _render_overlay_output() -> None:
     out_df = st.session_state.overlay_result_df
     report = st.session_state.overlay_report
@@ -348,6 +991,8 @@ def _render_overlay_output() -> None:
             with st.expander(f"Step {step_no} • {overlay_name}"):
                 st.json(step)
     elif isinstance(report, dict) and report.get("mode") == "single":
+        st.json({k: v for k, v in report.items() if k != "report"})
+        st.markdown("#### Detail")
         st.json(report.get("report", {}))
     else:
         st.json(report)
@@ -792,6 +1437,9 @@ def main() -> None:
     st.title(APP_TITLE)
     st.caption("UI/UX analisis data untuk workflow yang familiar dengan SPSS.")
 
+    if not _auth_gate():
+        st.stop()
+
     with st.sidebar:
         st.markdown("## Menu")
         page = st.radio(
@@ -799,13 +1447,17 @@ def main() -> None:
             options=[
                 "Dataset",
                 "Variable View",
+                "Data Quality",
+                "Transform",
                 "Descriptive",
                 "Frequencies",
                 "Crosstabs",
                 "Correlation",
+                "Inferential",
                 "Charts",
                 "Overlay",
                 "Export",
+                "Report",
             ],
         )
 
@@ -816,10 +1468,23 @@ def main() -> None:
         if st.session_state.df is not None:
             st.caption(f"Shape: {st.session_state.df.shape[0]:,} x {st.session_state.df.shape[1]:,}")
 
+        st.caption(f"Max upload: {MAX_UPLOAD_MB} MB")
+        if st.button("Reset overlay cache", key="reset_overlay_cache"):
+            st.session_state.overlay_base_df = None
+            st.session_state.overlay_patch_df = None
+            st.session_state.overlay_multi_data = None
+            st.session_state.overlay_result_df = None
+            st.session_state.overlay_report = None
+            st.success("Cache overlay direset.")
+
     if page == "Dataset":
         _page_dataset()
     elif page == "Variable View":
         _page_variable_view()
+    elif page == "Data Quality":
+        _page_quality()
+    elif page == "Transform":
+        _page_transform()
     elif page == "Descriptive":
         _page_descriptive()
     elif page == "Frequencies":
@@ -828,23 +1493,29 @@ def main() -> None:
         _page_crosstab()
     elif page == "Correlation":
         _page_correlation()
+    elif page == "Inferential":
+        _page_inferential()
     elif page == "Charts":
         _page_charts()
     elif page == "Overlay":
         _page_overlay()
     elif page == "Export":
         _page_export()
+    elif page == "Report":
+        _page_report()
 
     with st.expander("Tentang UI ini"):
         info = {
             "fokus": "Workflow analisis data cepat ala SPSS",
             "fitur_utama": [
-                "Variable view",
-                "Descriptive/Frequencies/Crosstabs",
-                "Correlation + chart interaktif",
-                "Overlay builder + export",
+                "Data quality checks",
+                "Transform tools (recode/compute/binning/missing/filter)",
+                "Descriptive/Frequencies/Crosstabs/Correlation",
+                "Inferential stats (t-test, chi-square, ANOVA, linear/logistic regression)",
+                "Overlay builder (2 file & multi-file) + export",
+                "Report generator (Markdown/HTML)",
             ],
-            "catatan": "Untuk analisis inferensial lanjutan (ANOVA/regresi kompleks), bisa ditambahkan pada iterasi berikutnya.",
+            "catatan": "Untuk keamanan publik, gunakan HTTPS + auth di reverse proxy.",
         }
         st.code(json.dumps(info, ensure_ascii=False, indent=2), language="json")
 

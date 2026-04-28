@@ -14,5 +14,11 @@ pip -q install -r requirements-ui.txt
 
 PORT="${PORT:-8501}"
 
+if [[ -n "${UI_USERNAME:-}" || -n "${UI_PASSWORD:-}" ]]; then
+  echo "[INFO] UI auth: ENABLED (env UI_USERNAME/UI_PASSWORD terdeteksi)"
+else
+  echo "[WARN] UI auth: DISABLED (set UI_USERNAME/UI_PASSWORD untuk proteksi login)"
+fi
+
 echo "[INFO] Menjalankan UI di http://localhost:${PORT}"
 exec streamlit run ui/app.py --server.port "$PORT" --server.address 0.0.0.0

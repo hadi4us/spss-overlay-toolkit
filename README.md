@@ -16,6 +16,8 @@ Project baru untuk pengolahan data/overlay file `.sav` (SPSS) dengan Python atau
 - `ui/app.py` → aplikasi web (UI/UX analisis data mirip SPSS)
 - `run_ui.sh` → jalankan aplikasi UI
 - `requirements-ui.txt` → dependency UI
+- `.streamlit/config.toml` → batas upload + hardening dasar Streamlit
+- `SECURITY.md` → panduan HTTPS/auth saat dipublikasikan
 
 ## Quick Start (Python)
 
@@ -77,18 +79,30 @@ cd /root/.openclaw/workspace/projects/spss-overlay-toolkit
 Akses di browser:
 - `http://localhost:8501`
 
+Aktifkan login UI (opsional tapi disarankan):
+
+```bash
+UI_USERNAME=admin UI_PASSWORD='ganti-password-kuat' ./run_ui.sh
+```
+
+Untuk publik internet, baca `SECURITY.md` (HTTPS + reverse proxy + auth tambahan).
+
 Menu yang tersedia di UI:
 - Dataset Manager (upload `.sav/.csv/.xlsx/.parquet`)
 - Variable View (tipe, missing, unique)
+- Data Quality Center (missing, duplicate key, outlier IQR, schema compare)
+- Transform (recode, compute, binning, missing handler, filter)
 - Descriptive Statistics
 - Frequencies
 - Crosstabs
 - Correlation Matrix + heatmap
+- Inferential Stats (t-test, chi-square, ANOVA, linear/logistic regression)
 - Charts interaktif
 - Overlay / Merge Builder (2 file)
 - Multi Overlay Builder (2+ file, berantai)
 - Mapping key BASE → OVERLAY (nama kolom boleh berbeda antar file)
 - Export dataset hasil analisis
+- Report Generator (download Markdown/HTML)
 
 ## Mode Profile (Preset Cepat)
 
@@ -128,12 +142,17 @@ Tambahkan argumen khusus:
 
 - Input: `.sav`, `.csv`, `.xlsx`, `.parquet` (Python)
 - Output: `.sav`, `.csv`, `.xlsx`, `.parquet` (Python)
+- Overlay 2 file dan multi-file (berantai)
 - Join mode: `left`, `inner`, `right`, `outer`
 - Strategi kolom overlap:
   - `coalesce` (prioritas base)
   - `replace` (prioritas overlay)
   - `keep_base`
   - `keep_overlay`
+- Data quality profiling + schema compare
+- Transformasi data inti (recode, compute, binning, missing, filter)
+- Inferential statistik utama (t-test, chi-square, ANOVA, regresi)
+- Report generator (Markdown/HTML)
 
 ## Quick Start (R)
 
