@@ -1,7 +1,7 @@
 [server]
 headless = true
-maxUploadSize = 100
-maxMessageSize = 100
+maxUploadSize = 200
+maxMessageSize = 200
 enableXsrfProtection = true
 
 [browser]

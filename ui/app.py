@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover
     smf = None
 
 APP_TITLE = "SPSS-Like Data Studio"
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "100"))
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "200"))
 
 
 def ensure_state() -> None:
