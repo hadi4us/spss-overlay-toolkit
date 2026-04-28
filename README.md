@@ -10,6 +10,9 @@ Project baru untuk pengolahan data/overlay file `.sav` (SPSS) dengan Python atau
 - `data/` → taruh file input (`base.sav`, `overlay.sav`)
 - `out/` → output hasil merge/overlay
 - `examples/` → contoh command siap jalan
+- `run.sh` → runner 1 perintah (default)
+- `run_with_profile.sh` → runner dengan preset profile
+- `profiles/*.env` → preset variabel per tipe dataset
 
 ## Quick Start (Python)
 
@@ -57,6 +60,40 @@ python src/overlay_sav.py \
   --method replace \
   --output out/hasil.sav \
   --report out/report.json
+```
+
+## Mode Profile (Preset Cepat)
+
+List profile:
+
+```bash
+./run_with_profile.sh --list
+```
+
+Lihat isi profile:
+
+```bash
+./run_with_profile.sh --show demografi
+```
+
+Jalankan profile:
+
+```bash
+./run_with_profile.sh demografi
+./run_with_profile.sh survei
+./run_with_profile.sh transaksi
+```
+
+Override base/overlay saat run:
+
+```bash
+BASE_FILE=data/my_base.sav OVERLAY_FILE=data/my_patch.sav ./run_with_profile.sh survei
+```
+
+Tambahkan argumen khusus:
+
+```bash
+./run_with_profile.sh transaksi --include-cols status,nominal --exclude-cols ingest_id
 ```
 
 ## Fitur
