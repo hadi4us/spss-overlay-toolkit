@@ -1184,6 +1184,11 @@ def _page_overlay() -> None:
                 key="overlay2_method",
             )
             normalize = st.checkbox("Normalize column names (lowercase_underscore)", value=False, key="overlay2_norm")
+            clean_keys = st.checkbox(
+                "Cleaning key sebelum merge (trim spasi, rapikan format angka)",
+                value=True,
+                key="overlay2_clean_keys",
+            )
 
             # Untuk menampilkan include/exclude secara realistis, simulasikan rename key overlay -> key base
             simulated_patch = patch_df.copy()
@@ -1247,11 +1252,13 @@ def _page_overlay() -> None:
                             method=method,
                             include_cols=run_include,
                             exclude_cols=run_exclude,
+                            clean_keys=clean_keys,
                         )
                         st.session_state.overlay_result_df = out_df
                         st.session_state.overlay_report = {
                             "mode": "single",
                             "key_mapping_base_to_overlay": run_key_map,
+                            "clean_keys": clean_keys,
                             "report": report,
                         }
                         st.success("Overlay 2 file selesai.")
@@ -1309,6 +1316,11 @@ def _page_overlay() -> None:
                 "Normalize column names (lowercase_underscore)",
                 value=False,
                 key="overlay_multi_norm",
+            )
+            clean_keys = st.checkbox(
+                "Cleaning key sebelum merge (trim spasi, rapikan format angka)",
+                value=True,
+                key="overlay_multi_clean_keys",
             )
 
             prepared_data: list[dict[str, Any]] = []
@@ -1447,6 +1459,7 @@ def _page_overlay() -> None:
                                 method=method,
                                 include_cols=step_include,
                                 exclude_cols=step_exclude,
+                                clean_keys=clean_keys,
                             )
                             rep["step"] = step_no
                             rep["overlay_name"] = overlay_name
@@ -1473,6 +1486,7 @@ def _page_overlay() -> None:
                         "keys": list(base_keys),
                         "how": how,
                         "method": method,
+                        "clean_keys": clean_keys,
                         "steps": steps,
                     }
                     st.success("Overlay multi-file selesai.")

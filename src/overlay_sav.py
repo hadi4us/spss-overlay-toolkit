@@ -95,6 +95,34 @@ def ensure_keys(df: "pd.DataFrame", keys: Iterable[str], label: str) -> None:
         raise SystemExit(f"Kolom key tidak ditemukan di {label}: {missing}")
 
 
+def _normalize_key_value(x):
+    if pd.isna(x):
+        return pd.NA
+
+    s = str(x).strip()
+    if s == "" or s.lower() in {"nan", "none", "<na>"}:
+        return pd.NA
+
+    # Jika string angka berakhiran .0 (mis. 92.0), ubah jadi 92
+    if s.replace(".", "", 1).isdigit() and s.endswith(".0"):
+        try:
+            f = float(s)
+            if f.is_integer():
+                return str(int(f))
+        except Exception:
+            pass
+
+    return s
+
+
+def normalize_key_columns(df: "pd.DataFrame", keys: list[str]) -> "pd.DataFrame":
+    out = df.copy()
+    for k in keys:
+        if k in out.columns:
+            out[k] = out[k].map(_normalize_key_value)
+    return out
+
+
 def overlay_merge(
     base_df: "pd.DataFrame",
     overlay_df: "pd.DataFrame",
@@ -103,7 +131,12 @@ def overlay_merge(
     method: str,
     include_cols: list[str],
     exclude_cols: list[str],
+    clean_keys: bool = False,
 ) -> tuple["pd.DataFrame", dict]:
+    if clean_keys:
+        base_df = normalize_key_columns(base_df, keys)
+        overlay_df = normalize_key_columns(overlay_df, keys)
+
     base_non_keys = [c for c in base_df.columns if c not in keys]
 
     if include_cols:
@@ -171,6 +204,7 @@ def overlay_merge(
         "keys": keys,
         "how": how,
         "method": method,
+        "clean_keys": bool(clean_keys),
         "overlay_columns_used": overlay_cols,
         "overlap_columns": overlap_cols,
     }
@@ -202,6 +236,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--normalize-cols",
         action="store_true",
         help="Normalisasi nama kolom jadi lowercase + underscore",
+    )
+    p.add_argument(
+        "--clean-keys",
+        action="store_true",
+        help="Bersihkan nilai key sebelum merge (trim spasi, rapikan angka seperti 92.0 -> 92)",
     )
     return p
 
@@ -240,6 +279,7 @@ def main() -> None:
         method=args.method,
         include_cols=include_cols,
         exclude_cols=exclude_cols,
+        clean_keys=args.clean_keys,
     )
 
     write_table(result_df, args.output)
