@@ -19,12 +19,29 @@ Project baru untuk pengolahan data/overlay file `.sav` (SPSS) dengan Python atau
 - `.streamlit/config.toml` → batas upload + hardening dasar Streamlit
 - `SECURITY.md` → panduan HTTPS/auth saat dipublikasikan
 
+## Instalasi di MacBook (macOS)
+
+Panduan lengkap ada di:
+- **`INSTALL_MACOS.md`**
+
+Quick link setup cepat:
+
+```bash
+git clone https://github.com/hadi4us/spss-overlay-toolkit.git
+cd spss-overlay-toolkit
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-python.txt
+pip install -r requirements-ui.txt
+./run_ui.sh
+```
+
 ## Quick Start (Python)
 
 ### Opsi A — 1 perintah (disarankan)
 
 ```bash
-cd /root/.openclaw/workspace/projects/spss-overlay-toolkit
+cd spss-overlay-toolkit
 ./run.sh
 ```
 
@@ -52,7 +69,7 @@ Atau tambah flag langsung:
 ### Opsi B — jalankan script Python langsung
 
 ```bash
-cd /root/.openclaw/workspace/projects/spss-overlay-toolkit
+cd spss-overlay-toolkit
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-python.txt
@@ -72,7 +89,7 @@ python src/overlay_sav.py \
 Jalankan aplikasi web:
 
 ```bash
-cd /root/.openclaw/workspace/projects/spss-overlay-toolkit
+cd spss-overlay-toolkit
 ./run_ui.sh
 ```
 
@@ -101,7 +118,7 @@ Menu yang tersedia di UI:
 - Overlay / Merge Builder (2 file)
 - Multi Overlay Builder (2+ file, berantai)
 - Mapping key BASE → OVERLAY (nama kolom boleh berbeda antar file)
-- Export dataset hasil analisis (pilih semua baris / halaman preview)
+- Export dataset hasil analisis (default FULL dataset + opsi preview-only)
 - Pagination preview (Prev/Next + nomor halaman)
 - Report Generator (download Markdown/HTML)
 
